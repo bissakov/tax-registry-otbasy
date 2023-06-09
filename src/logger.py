@@ -1,13 +1,15 @@
-from pywinauto import actionlogger
-import logging
 import datetime
+import logging
+from os import makedirs
+
+from pywinauto import actionlogger
 
 
 class LogFilter(logging.Filter):
     def filter(self, record):
         return 'Cannot retrieve text length for handle' not in record.getMessage()
 
-
+makedirs(r'D:\Work\python_rpa\tax-registry-otbasy\logs', exist_ok=True)
 actionlogger.enable()
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
