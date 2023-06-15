@@ -1,26 +1,14 @@
 import datetime
-import os
+import logging
 import warnings
 from os import makedirs
 from os.path import join
 from typing import List, Optional, Tuple
 
-import dotenv
-import requests
-
-from src import colvir
-from src.bot_notification import TelegramNotifier
-from src.data_structures import Credentials, DateRange, Process, ReportInfo
-from src.logger import logger
-from src.utils import kill_all_processes
-
-
-logger = logger
-session = requests.Session()
-dotenv.load_dotenv()
-notifier = TelegramNotifier(token=os.getenv('TOKEN_LOG'), chat_id=os.getenv(f'CHAT_ID_LOG'), session=session)
-credentials = Credentials(usr=os.getenv(f'COLVIR_USR'), psw=os.getenv(f'COLVIR_PSW'))
-process = Process(name='COLVIR', path=os.getenv('COLVIR_PROCESS_PATH'))
+from config import notifier, session
+import colvir
+from data_structures import DateRange, ReportInfo
+from utils import kill_all_processes
 
 
 def get_month_range(today: datetime.date) -> tuple:
@@ -49,8 +37,8 @@ def get_quarter_range(today: datetime.date) -> Optional[Tuple[str, str]]:
         first_day = datetime.date(today.year, today.month - 3, 1)
         last_day = datetime.date(today.year, today.month, 1) - datetime.timedelta(days=1)
     return (
-        first_day.strftime('%d.%m.%Y'),
-        last_day.strftime('%d.%m.%Y')
+        first_day.strftime('%d.%m.%y'),
+        last_day.strftime('%d.%m.%y')
     )
 
 
@@ -71,7 +59,7 @@ def get_report_info(today: datetime.date) -> List[ReportInfo]:
         parent_report_path = russian_months[today.month - 2]
     else:
         date_range = DateRange(*get_quarter_range(today))
-        parent_report_path = str((today.month - 1) / 3)
+        parent_report_path = f'{(today.month - 1) // 3} квартал'
 
     for branch in branches:
         report_rel_folder_path = join(parent_report_path, branch)
@@ -88,20 +76,20 @@ def get_report_info(today: datetime.date) -> List[ReportInfo]:
                 report_fserver_full_path=join(fserver_base_path, report_rel_path),
                 range=date_range,
             ))
-            # makedirs(report_infos[-1].report_local_folder_path, exist_ok=True)
-            # makedirs(report_infos[-1].report_local_folder_path.replace('reports', 'converted_reports'),
-            #          exist_ok=True)
+            makedirs(report_infos[-1].report_local_folder_path, exist_ok=True)
+            makedirs(report_infos[-1].report_local_folder_path.replace('reports', 'converted_reports'),
+                     exist_ok=True)
             # makedirs(report_infos[-1].report_fserver_folder_path, exist_ok=True)
     return report_infos
 
 
 def main() -> None:
-    logger.info('Start of the process')
+    logging.info('Start of the process')
 
     warnings.simplefilter(action='ignore', category=UserWarning)
 
     # today = datetime.date.today()
-    today = datetime.date(2023, 1, 5)
+    today = datetime.date(2023, 2, 5)
     if not (today.day == 5 or (today.day == 15 and today.month in [1, 4, 7, 10])):
         return
 
@@ -112,15 +100,16 @@ def main() -> None:
     try:
         colvir.run_colvir(report_infos=report_infos)
     except RuntimeError as e:
+        notifier.send_message(str(e))
         session.close()
         raise e
     except Exception as e:
+        notifier.send_message(str(e))
         session.close()
         raise e
 
-    logger.info('Successful end of the process')
+    logging.info('Successful end of the process')
     session.close()
 
 
-if __name__ == '__main__':
-    main()
+main()
