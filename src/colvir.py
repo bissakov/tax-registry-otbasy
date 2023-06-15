@@ -1,20 +1,23 @@
+import logging
 import os
 import re
 from os import unlink
 from os.path import exists, getsize, join
 from time import sleep
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
+import pywinauto
 import win32com.client as win32
 from pywinauto import Application, Desktop
 from pywinauto.application import ProcessNotFoundError
 from pywinauto.controls.hwndwrapper import DialogWrapper, InvalidWindowHandle
 from pywinauto.findbestmatch import MatchError
 from pywinauto.findwindows import ElementAmbiguousError, ElementNotFoundError
+from pywinauto.base_wrapper import ElementNotEnabled
 from pywinauto.timings import TimeoutError as TimingsTimeoutError
 
 from src.data_structures import FilesInfo, ReportInfo
-from src.main import credentials, notifier, process
+from config import credentials, process, notifier
 from src.utils import choose_mode, get_current_process_pid, get_window, is_correct_file, \
     is_errored, kill, kill_all_processes, kill_process
 
@@ -108,7 +111,10 @@ def prepare_report(app: Application, report_info: ReportInfo) -> None:
     sleep(1)
 
     report_win['Предварительный просмотр'].wrapper_object().click()
-    report_win['Экспорт в файл...'].wrapper_object().click()
+    export_win = report_win['Экспорт в файл...']
+    export_win.wait(wait_for='enabled', timeout=30)
+
+    export_win.wrapper_object().click()
 
     if exists(report_info.report_local_full_path):
         unlink(report_info.report_local_full_path)
@@ -179,11 +185,7 @@ def close_sessions(pids: List[int], done_files: List, excel: win32.Dispatch,
     return pids, _done_files
 
 
-def convert_reports():
-    kill_all_processes(proc_name='EXCEL')
-    excel = win32.Dispatch('Excel.Application')
-    excel.DisplayAlerts = False
-
+def convert_reports(excel: Any):
     i = 0
     for path, subdirs, files in os.walk(r'C:\Users\robot.ad\Desktop\tax registry\reports'):
         for name in files:
@@ -191,13 +193,15 @@ def convert_reports():
             xlsb_full_path = re.sub(r'(.+)reports(.+?)\d+_(Z_160_DEPOFNO200[_025]*?__\d\d).xls',
                                     r'\g<1>converted_reports\g<2>\g<3>.xlsb', xls_full_path)
             i += 1
-            print(i)
             try:
                 wb = excel.Workbooks.Open(xls_full_path)
                 wb.SaveAs(xlsb_full_path, FileFormat=50)
                 wb.Close()
-                print('success')
-            except Exception:
+                logging.info(f'{i} was converted')
+                notifier.send_message(f'{i} was converted')
+            except Exception as e:
+                logging.info(f'{i} was NOT converted. {e}')
+                notifier.send_message(f'{i} was NOT converted. {e}')
                 continue
     kill_all_processes(proc_name='EXCEL')
 
@@ -208,14 +212,22 @@ def run_colvir(report_infos: List[ReportInfo]) -> None:
     pids = []
     report_len = len(report_infos)
 
-    excel = win32.gencache.EnsureDispatch('Excel.Application')
+    excel = win32.Dispatch('Excel.Application')
     excel.DisplayAlerts = False
 
     for index, report_info in enumerate(report_infos, start=1):
         app = open_colvir(pids=pids)
         pids.append(app.process)
+        logging.info(f'Colvir with process {pids[-1]} was opened')
+        logging.info(f'pids: {pids}')
+        try:
+            prepare_report(app=app, report_info=report_info)
+        except pywinauto.timings.TimeoutError:
+            report_win = app.window(title='Выбор отчета')
+            if report_win.exists():
+                report_win.close()
+            prepare_report(app=app, report_info=report_info)
 
-        prepare_report(app=app, report_info=report_info)
         notifier.send_message(message=f'{index}/{report_len}')
 
     done_files = []
@@ -224,6 +236,13 @@ def run_colvir(report_infos: List[ReportInfo]) -> None:
                                           excel=excel, pids_number=report_len)
 
     notifier.send_message('Converting reports')
-    convert_reports()
+    convert_reports(excel=excel)
     notifier.send_message('Reports converted')
+
+    # for path, subdirs, files in os.walk(r'C:\Users\robot.ad\Desktop\tax registry\converted_reports'):
+    #     for name in files:
+    #         if not is_correct_file(root=path, xls_file_path=name, excel=excel):
+    #             print(join(path, name))
+
+    kill_all_processes(proc_name='EXCEL')
     notifier.send_message('Process succesfully finished')
