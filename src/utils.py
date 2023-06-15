@@ -45,6 +45,7 @@ def get_window(title: str, app: Application, wait_for: str = 'exists', timeout: 
 
 def choose_mode(app: Application, mode: str) -> None:
     mode_win = app.window(title='Выбор режима')
+    mode_win.wait(wait_for='exists', timeout=60)
     mode_win['Edit2'].wrapper_object().set_text(text=mode)
     mode_win['Edit2'].wrapper_object().send_keystrokes('~')
 
@@ -78,4 +79,4 @@ def is_correct_file(root: str, xls_file_path: str, excel: win32.Dispatch) -> boo
     unlink(xlsx_file_path)
     unlink(xls_file_path)
 
-    return next((True for row in sheet.iter_rows(max_row=100) for cell in row if cell.has_style), False)
+    return next((True for row in sheet.iter_rows(max_row=50) for cell in row if cell.alignment.horizontal), False)
