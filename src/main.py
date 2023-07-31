@@ -88,8 +88,8 @@ def main() -> None:
 
     warnings.simplefilter(action='ignore', category=UserWarning)
 
-    # today = datetime.date.today()
-    today = datetime.date(2023, 2, 5)
+    today = datetime.date.today()
+    # today = datetime.date(2023, 2, 5)
     if not (today.day == 5 or (today.day == 15 and today.month in [1, 4, 7, 10])):
         return
 
