@@ -1,136 +1,61 @@
 import logging
 import os
-import re
+import shutil
 from os import unlink
-from os.path import exists, getsize, join
+from os.path import basename, dirname, exists
 from time import sleep
-from typing import Any, List, Optional, Tuple
+from typing import List
 
-import pywinauto
+import httpx
 import win32com.client as win32
-from pywinauto import Application, Desktop
-from pywinauto.application import ProcessNotFoundError
-from pywinauto.controls.hwndwrapper import DialogWrapper, InvalidWindowHandle
+from pywinauto import Application
 from pywinauto.findbestmatch import MatchError
 from pywinauto.findwindows import ElementAmbiguousError, ElementNotFoundError
-from pywinauto.base_wrapper import ElementNotEnabled
 from pywinauto.timings import TimeoutError as TimingsTimeoutError
 
-from src.data_structures import FilesInfo, ReportInfo
-from config import credentials, process, notifier
-from src.utils import choose_mode, get_current_process_pid, get_window, is_correct_file, \
-    is_errored, kill, kill_all_processes, kill_process
-
-
-def login() -> None:
-    desktop: Desktop = Desktop(backend='win32')
-    try:
-        login_win = desktop.window(title='Вход в систему')
-        login_win.wait(wait_for='exists', timeout=20)
-        login_win['Edit2'].wrapper_object().set_text(text=credentials.usr)
-        login_win['Edit'].wrapper_object().set_text(text=credentials.psw)
-        login_win['OK'].wrapper_object().click()
-    except ElementAmbiguousError:
-        windows: List[DialogWrapper] = Desktop(backend='win32').windows()
-        for win in windows:
-            if 'Вход в систему' not in win.window_text():
-                continue
-            kill_process(pid=win.process_id())
-        raise ElementNotFoundError
-
-
-def confirm_warning(app: Application) -> None:
-    found = False
-    for window in app.windows():
-        if found:
-            break
-        if window.window_text() != 'Colvir Banking System':
-            continue
-        win = app.window(handle=window.handle)
-        for child in win.descendants():
-            if child.window_text() == 'OK':
-                found = True
-                win.close()
-                if win.exists():
-                    win.close()
-                break
-
-
-def open_colvir(pids: List[int], retry_count: int = 0) -> Optional[Application]:
-    if retry_count == 3:
-        raise RuntimeError('Не удалось запустить Colvir')
-
-    try:
-        Application(backend='win32').start(cmd_line=process.path)
-        login()
-        sleep(4)
-    except (ElementNotFoundError, TimingsTimeoutError):
-        retry_count += 1
-        kill(pids=pids)
-        app = open_colvir(pids=pids, retry_count=retry_count)
-        return app
-    try:
-        pid: int = get_current_process_pid(proc_name='COLVIR', pids=pids)
-        app: Application = Application(backend='win32').connect(process=pid)
-        try:
-            if app.Dialog.window_text() == 'Произошла ошибка':
-                retry_count += 1
-                kill(pids=pids)
-                app = open_colvir(pids=pids, retry_count=retry_count)
-                return app
-        except MatchError:
-            pass
-    except ProcessNotFoundError:
-        sleep(1)
-        pid = get_current_process_pid(proc_name='COLVIR', pids=pids)
-        app: Application = Application(backend='win32').connect(process=pid)
-    try:
-        confirm_warning(app=app)
-        sleep(2)
-        if is_errored(app=app):
-            raise ElementNotFoundError
-    except (ElementNotFoundError, MatchError):
-        retry_count += 1
-        kill(pids=pids)
-        app = open_colvir(pids=pids, retry_count=retry_count)
-    return app
+from src.bot_notification import ProgressBar
+from src.data_structures import ReportInfo
+from src.config import get_process_path
+from src.utils import check_interactivity, choose_mode, confirm, dispatch, get_window, is_correct_file, login, workbook_open
 
 
 def prepare_report(app: Application, report_info: ReportInfo) -> None:
     choose_mode(app=app, mode='TREPRT')
 
     report_win = get_window(app=app, title='Выбор отчета')
-    sleep(1)
     report_win.send_keystrokes('{F9}')
 
-    sleep(1)
     copper_filter_win = get_window(app=app, title='Фильтр')
     copper_filter_win['Edit4'].set_text(text=report_info.report_type)
-    sleep(1)
-    copper_filter_win['OK'].wrapper_object().click()
-    sleep(1)
+    copper_filter_win['OK'].send_keystrokes('{ENTER}')
 
-    report_win['Предварительный просмотр'].wrapper_object().click()
-    export_win = report_win['Экспорт в файл...']
-    export_win.wait(wait_for='enabled', timeout=30)
+    while True:
+        report_win['Предварительный просмотр'].click()
+        sleep(.1)
+        if report_win['Экспорт в файл...'].is_enabled():
+            break
 
-    export_win.wrapper_object().click()
+    report_win['Экспорт в файл...'].send_keystrokes('{ENTER}')
 
-    if exists(report_info.report_local_full_path):
-        unlink(report_info.report_local_full_path)
+    if exists(report_info.local_full_path):
+        unlink(report_info.local_full_path)
 
     file_win = get_window(app=app, title='Файл отчета ')
-    file_win['Edit2'].set_text(text=report_info.report_local_folder_path)
+    file_win['Edit2'].set_text(text=dirname(report_info.local_full_path))
     sleep(1)
-    file_win['Edit4'].set_text(text=f'{app.process}_{report_info.report_name}')
+    file_win['Edit4'].set_text(text=basename(report_info.local_full_path))
     try:
         file_win['ComboBox'].select(11)
         sleep(1)
     except (IndexError, ValueError):
         pass
-    file_win['OK'].click()
+    file_win['OK'].send_keystrokes('{ENTER}')
 
-    params_win = get_window(app=app, title='Параметры отчета ')
+    try:
+        params_win = get_window(app=app, title='Параметры отчета ')
+    except TimingsTimeoutError:
+        file_win['OK'].send_keystrokes('{ENTER}')
+        params_win = get_window(app=app, title='Параметры отчета ')
 
     if report_info.report_type == 'Z_160_DEPOFNO200':
         branch_input_box = 'Edit6'
@@ -145,104 +70,123 @@ def prepare_report(app: Application, report_info: ReportInfo) -> None:
     params_win[from_date_input_box].set_text(text=report_info.range.from_date)
     params_win[to_date_input_box].set_text(text=report_info.range.to_date)
     sleep(1)
-    params_win['OK'].wrapper_object().click()
+    params_win['OK'].send_keystrokes('{ENTER}')
 
 
-def close_sessions(pids: List[int], done_files: List, excel: win32.Dispatch,
-                   pids_number: int) -> Tuple[List[int], List]:
-    _done_files = list(done_files)
-    files_info: List[FilesInfo] = []
-    for path, subdirs, files in os.walk(r'C:\Users\robot.ad\Desktop\tax registry\reports'):
-        for name in files:
-            if name in _done_files:
-                continue
-            files_info.append(FilesInfo(path=path, name=name))
-
-    for file_info in files_info:
-        path = file_info.path
-        name = file_info.name
-        full_path = file_info.full_path
-        pid = file_info.pid
-        if not exists(path=full_path) and getsize(filename=full_path) == 0:
-            continue
+def export_tax_registry(report_info: ReportInfo) -> Application:
+    retry_count: int = 0
+    app = None
+    while retry_count < 5:
         try:
-            app = Application(backend='win32').connect(process=pid)
-            if not any('Выбор отчета' in win.window_text() for win in app.windows()):
-                continue
-            try:
-                os.rename(src=full_path, dst=full_path)
-            except OSError:
-                continue
-            if not is_correct_file(root=path, xls_file_path=name, excel=excel):
-                continue
-            kill_process(pid=pid)
-            pids.remove(pid)
-            message = f'{len(_done_files) + 1}/{pids_number}\t{pid} was terminated'
-            notifier.send_message(message=message)
-            _done_files.append(name)
-        except (ValueError, ProcessNotFoundError, InvalidWindowHandle):
+            app = Application().start(cmd_line=get_process_path())
+            login(app)
+            confirm(app)
+            check_interactivity(app)
+            prepare_report(app=app, report_info=report_info)
+            break
+        except (ElementNotFoundError, MatchError, ElementAmbiguousError):
+            retry_count += 1
+            if app:
+                app.kill()
             continue
-    return pids, _done_files
+    if retry_count == 10:
+        raise Exception('max_retries exceeded')
+    return app
 
 
-def convert_reports(excel: Any):
-    i = 0
-    for path, subdirs, files in os.walk(r'C:\Users\robot.ad\Desktop\tax registry\reports'):
-        for name in files:
-            xls_full_path = join(path, name)
-            xlsb_full_path = re.sub(r'(.+)reports(.+?)\d+_(Z_160_DEPOFNO200[_025]*?__\d\d).xls',
-                                    r'\g<1>converted_reports\g<2>\g<3>.xlsb', xls_full_path)
-            i += 1
+def is_file_exported(full_file_name: str, excel: win32.CDispatch) -> bool:
+    if not os.path.exists(path=full_file_name):
+        return False
+    if os.path.getsize(filename=full_file_name) == 0:
+        return False
+    try:
+        os.rename(src=full_file_name, dst=full_file_name)
+    except OSError:
+        return False
+    if not is_correct_file(excel_full_file_path=full_file_name, excel=excel):
+        return False
+    return True
+
+
+def close_sessions(client: httpx.Client, report_infos: List[ReportInfo]) -> None:
+    close_session_pbar = ProgressBar(client=client, description='Закрытие сессий')
+    index = 1
+
+    with dispatch(application='Excel.Application') as excel:
+        while any(isinstance(r.app, Application) for r in report_infos):
+            for i, report_info in enumerate(report_infos):
+                if report_info.app is None:
+                    continue
+
+                if is_file_exported(full_file_name=report_info.local_full_path, excel=excel):
+                    report_info.app.kill()
+                    report_info.app = None
+                    logging.info(f'{index}/{len(report_infos)} was exported')
+                    close_session_pbar.update(step=index, total=len(report_infos))
+                    index += 1
+
+    # _report_infos = report_infos[:]
+    # report_infos_size = len(report_infos)
+    # index = 1
+    #
+    # with dispatch(application='Excel.Application') as excel:
+    #     while _report_infos:
+    #         for i, report_info in enumerate(report_infos):
+    #             if report_info not in _report_infos:
+    #                 continue
+    #
+    #             if is_file_exported(full_file_name=report_info.local_full_path, excel=excel):
+    #                 _report_infos.remove(report_info)
+    #                 apps[i].kill()
+    #                 logging.info(f'{index}/{report_infos_size} was exported')
+    #                 close_session_pbar.update(step=index, total=report_infos_size)
+    #                 index += 1
+
+
+def convert_reports(client: httpx.Client, report_infos: List[ReportInfo]) -> None:
+    convert_pbar = ProgressBar(client=client, description='Конвертация отчетов в .xlsb')
+
+    with dispatch(application='Excel.Application') as excel:
+        for index, report_info in enumerate(report_infos, start=1):
             try:
-                wb = excel.Workbooks.Open(xls_full_path)
-                wb.SaveAs(xlsb_full_path, FileFormat=50)
-                wb.Close()
-                logging.info(f'{i} was converted')
-                notifier.send_message(f'{i} was converted')
+                with workbook_open(excel=excel, file_path=report_info.local_full_path) as wb:
+                    wb.SaveAs(report_info.xlsb_full_path, FileFormat=50)
+                logging.info(f'{index} was converted')
+                os.remove(report_info.local_full_path)
+                convert_pbar.update(step=index, total=len(report_infos))
             except Exception as e:
-                logging.info(f'{i} was NOT converted. {e}')
-                notifier.send_message(f'{i} was NOT converted. {e}')
-                continue
-    kill_all_processes(proc_name='EXCEL')
+                raise e
+
+
+def transfer_files(client: httpx.Client, report_infos: List[ReportInfo]) -> None:
+    transfer_pbar = ProgressBar(client=client, description='Перенос отчетов на сервер')
+
+    for index, report_info in enumerate(report_infos, start=1):
+        if exists(report_info.fserver_full_path):
+            unlink(report_info.fserver_full_path)
+        shutil.copyfile(src=report_info.xlsb_full_path, dst=report_info.fserver_full_path)
+        transfer_pbar.update(step=index, total=len(report_infos))
+
+
+def check_completion(client: httpx.Client, report_infos: List[ReportInfo]) -> None:
+    check_completion_pbar = ProgressBar(client=client, description='Проверка завершения процесса')
+
+    for index, report_info in enumerate(report_infos, start=1):
+        if not exists(report_info.fserver_full_path):
+            raise Exception(f'File {report_info.fserver_full_path} was not exported')
+        check_completion_pbar.update(step=index, total=len(report_infos))
 
 
 def run_colvir(report_infos: List[ReportInfo]) -> None:
-    notifier.send_message('Process has started')
+    with httpx.Client() as client:
+        colvir_pbar = ProgressBar(client=client, description='Выгрузка регистров')
 
-    pids = []
-    report_len = len(report_infos)
+        for index, report_info in enumerate(report_infos, start=1):
+            app = export_tax_registry(report_info=report_info)
+            report_info.app = app
+            colvir_pbar.update(step=index, total=len(report_infos))
 
-    excel = win32.Dispatch('Excel.Application')
-    excel.DisplayAlerts = False
-
-    for index, report_info in enumerate(report_infos, start=1):
-        app = open_colvir(pids=pids)
-        pids.append(app.process)
-        logging.info(f'Colvir with process {pids[-1]} was opened')
-        logging.info(f'pids: {pids}')
-        try:
-            prepare_report(app=app, report_info=report_info)
-        except pywinauto.timings.TimeoutError:
-            report_win = app.window(title='Выбор отчета')
-            if report_win.exists():
-                report_win.close()
-            prepare_report(app=app, report_info=report_info)
-
-        notifier.send_message(message=f'{index}/{report_len}')
-
-    done_files = []
-    while pids:
-        pids, done_files = close_sessions(pids=pids, done_files=done_files,
-                                          excel=excel, pids_number=report_len)
-
-    notifier.send_message('Converting reports')
-    convert_reports(excel=excel)
-    notifier.send_message('Reports converted')
-
-    # for path, subdirs, files in os.walk(r'C:\Users\robot.ad\Desktop\tax registry\converted_reports'):
-    #     for name in files:
-    #         if not is_correct_file(root=path, xls_file_path=name, excel=excel):
-    #             print(join(path, name))
-
-    kill_all_processes(proc_name='EXCEL')
-    notifier.send_message('Process succesfully finished')
+        close_sessions(client=client, report_infos=report_infos)
+        convert_reports(client=client, report_infos=report_infos)
+        transfer_files(client=client, report_infos=report_infos)
+        check_completion(client=client, report_infos=report_infos)
