@@ -1,40 +1,65 @@
-import requests
-from requests.adapters import HTTPAdapter
+import logging
+from time import sleep
+from typing import Optional
+from urllib.parse import urljoin
+
+import httpx
+import numpy
+from httpx import ConnectError, ReadError, ReadTimeout, RemoteProtocolError
+
+from src.config import get_telegram_secrets
 
 
-class TelegramNotifier:
-    def __init__(self, token: str, chat_id: str, session: requests.Session, retries: int = 5):
-        self.token: str = token
-        self.api_params = {'chat_id': chat_id, 'parse_mode': 'Markdown'}
-        self.retries = retries
-        self.session = session
-        self.session.mount('http://', HTTPAdapter(max_retries=self.retries))
+def _send_message(message: str, message_id: Optional[int] = None, client: Optional[httpx.Client] = None) -> httpx.Response:
+    token, chat_id = get_telegram_secrets()
+    api_url = f'https://api.telegram.org/bot{token}/'
+    send_data = {'chat_id': chat_id, 'text': message}
+    if message_id:
+        send_data['message_id'] = message_id
+    url = urljoin(api_url, 'sendMessage' if not message_id else 'editMessageText')
+    response = client.post(url, data=send_data, timeout=300) if client \
+        else httpx.post(url, data=send_data, timeout=300)
 
-    def _send_message(self, message: str, is_document: bool = False) -> requests.models.Response:
-        message_type = 'sendDocument' if is_document else 'sendMessage'
-        api_url = f'https://api.telegram.org/bot{self.token}/{message_type}'
-        args = {'url': api_url, 'params': self.api_params, 'json': {'text': message}}
-        if is_document:
-            args['files'] = {'document': open(file=message, mode='rb')}
-        return self.session.post(**args)
-
-    def send_message(self, message: str, is_document: bool = False) -> None:
-        # pass
-        try:
-            self._send_message(message=message, is_document=is_document)
-        except requests.exceptions.ConnectionError:
-            return
+    if response.status_code == 400:
+        logging.info(f'response: {response}\nmessage_id: {message_id}\nmessage: {message}')
+    else:
+        logging.info(f'response: {response}')
+    return response
 
 
-if __name__ == '__main__':
-    import os
-    import dotenv
+def send_message(message: str, message_id: Optional[int] = None,
+                 client: Optional[httpx.Client] = None, attempt: int = 1) -> httpx.Response:
+    try:
+        response = _send_message(message, message_id, client)
+    except (ReadTimeout, ConnectError, RemoteProtocolError, ReadError) as exc:
+        if attempt >= (20 if isinstance(exc, ReadTimeout) else 5):
+            raise exc
+        sleep(5)
+        return send_message(message, message_id, client, attempt=attempt + 1)
+    return response
 
-    dotenv.load_dotenv()
-    with requests.Session() as _session:
-        notifier = TelegramNotifier(token=os.getenv('TOKEN_LOG'), chat_id=os.getenv(f'CHAT_ID_LOG'), session=_session)
-        notifier.send_message(message='test')
-        # notifiers.log.send_message(message=r'C:\Users\robot.ad\Desktop\Untitled 1.xlsx', is_document=True)
 
-        # notifiers.alert.send_message(message='Alert test message from bot')
-        # notifiers.alert.send_message(message=r'C:\Users\robot.ad\Desktop\2207_09.xlsb', is_document=True)
+class ProgressBar:
+    def __init__(self, client: httpx.Client, description: str = 'Progress', bar_width: int = 10) -> None:
+        self.client = client
+        self.description = description
+        self.bar_width = bar_width
+        self.progress_bar_message_id = None
+        self.message = '{description}: {step}/{total}\n' \
+                       '{filled}{unfilled}\n{caption}'
+
+    def update(self, step: int, total: int, caption: str = '') -> None:
+        filled = int(numpy.clip((step / total) * 100, 0, 100)) // (100 // self.bar_width)
+        unfilled = self.bar_width - filled
+
+        message = self.message.format(description=self.description,
+                                      step=step, total=total,
+                                      filled='█' * filled, unfilled='░' * unfilled,
+                                      caption=caption)
+
+        if self.progress_bar_message_id is None:
+            response = send_message(client=self.client, message=message)
+            data = response.json()
+            self.progress_bar_message_id = data['result']['message_id']
+        else:
+            send_message(client=self.client, message=message, message_id=self.progress_bar_message_id)
