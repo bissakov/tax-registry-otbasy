@@ -1,11 +1,14 @@
 from dataclasses import dataclass
 from os.path import join
+from typing import Optional
+
+from pywinauto import Application
 
 
 @dataclass
 class Credentials:
-    usr: str
-    psw: str
+    user: str
+    password: str
 
 
 @dataclass
@@ -24,12 +27,11 @@ class DateRange:
 class ReportInfo:
     report_type: str
     branch: str
-    report_name: str
-    report_local_folder_path: str
-    report_local_full_path: str
-    report_fserver_folder_path: str
-    report_fserver_full_path: str
+    local_full_path: str
+    xlsb_full_path: str
+    fserver_full_path: str
     range: DateRange
+    app: Optional[Application] = None
 
 
 @dataclass
