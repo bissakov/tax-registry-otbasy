@@ -1,16 +1,34 @@
 import os
+from datetime import date
 
 import dotenv
-import requests
 
-import logger
-from bot_notification import TelegramNotifier
-from data_structures import Credentials, Process
-
-logger.setup_logger()
-
-session = requests.Session()
 dotenv.load_dotenv()
-notifier = TelegramNotifier(token=os.getenv('TOKEN_LOG'), chat_id=os.getenv(f'CHAT_ID_LOG'), session=session)
-credentials = Credentials(usr=os.getenv(f'COLVIR_USR'), psw=os.getenv(f'COLVIR_PSW'))
-process = Process(name='COLVIR', path=os.getenv('COLVIR_PROCESS_PATH'))
+
+
+def get_today() -> date:
+    return date.today()
+    # return date(2023, 10, 5)
+
+
+def get_local_path() -> str:
+    return r'C:\Users\robot.ad\Desktop\tax-registry-otbasy\reports'
+
+
+def get_fserver_path() -> str:
+    today = get_today()
+    year = today.year if today.month != 1 else today.year - 1
+    return fr'\\fserver\ДБУИО_Новая\ДБУИО_Общая папка\ДБУ_Информация УНУ\{year}\ИПНи СН\200 по клиентам за {year}'
+    # return r'C:\Users\robot.ad\Desktop\tax-registry-otbasy\finished'
+
+
+def get_telegram_secrets() -> tuple[str, str]:
+    return os.getenv('TOKEN_LOG'), os.getenv('CHAT_ID_LOG')
+
+
+def get_credentials() -> tuple[str, str]:
+    return os.getenv('COLVIR_USR'), os.getenv('COLVIR_PSW')
+
+
+def get_process_path() -> str:
+    return os.getenv('COLVIR_PROCESS_PATH')
