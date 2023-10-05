@@ -1,36 +1,56 @@
 import datetime
 import logging
-from os import makedirs
+import os
+import warnings
+from os.path import join
 
 from pywinauto import actionlogger
 
 
 class LogFilter(logging.Filter):
     def filter(self, record):
-        return 'Cannot retrieve text length for handle' not in record.getMessage()
+        message = record.getMessage()
+        return 'WARNING! Cannot retrieve text length for handle' not in message
+
+
+class PywinautoLoggerFilter(logging.Filter):
+    def filter(self, record):
+        return False
 
 
 def setup_logger() -> None:
-    makedirs(r'C:\Users\robot.ad\Desktop\tax registry\logs', exist_ok=True)
-    actionlogger.enable()
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    root_folder = r'C:\Users\robot.ad\Desktop\tax-registry-otbasy\logs'
+    os.makedirs(root_folder, exist_ok=True)
 
-    formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s')
+    actionlogger.enable()
+    actionlogger.ActionLogger.logger.propagate = True
+    actionlogger.ActionLogger.logger.removeHandler(actionlogger.ActionLogger.logger.handlers[0])
+    actionlogger.ActionLogger.logger.addFilter(LogFilter())
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter('%(asctime).19s %(levelname)s %(name)s %(filename)s %(funcName)s : %(message)s')
+
+    today = datetime.date.today()
+    year_month_folder = join(root_folder, today.strftime('%Y/%B'))
+    os.makedirs(year_month_folder, exist_ok=True)
 
     file_handler = logging.FileHandler(
-        f'../logs/{datetime.date.today().strftime("%d.%m.%y")}.log',
+        join(year_month_folder, f'{today.strftime("%d.%m.%y")}.log'),
         encoding='utf-8'
     )
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
 
     stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.INFO)
+    stream_handler.setLevel(logging.DEBUG)
     stream_handler.setFormatter(formatter)
 
-    pywinauto_logger = logging.getLogger('pywinauto')
-    pywinauto_logger.addFilter(LogFilter())
+    httpcore_logger = logging.getLogger('httpcore')
+    httpcore_logger.setLevel(logging.INFO)
 
     logger.addHandler(file_handler)
     logger.addHandler(stream_handler)
+
+    warnings.simplefilter(action='ignore', category=UserWarning)
