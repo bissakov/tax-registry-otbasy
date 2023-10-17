@@ -18,6 +18,7 @@ def get_local_path() -> str:
 def get_fserver_path() -> str:
     today = get_today()
     year = today.year if today.month != 1 else today.year - 1
+    # \\fserver\ДБУИО_Новая\ДБУИО_Общая папка\ДБУ_Информация УНУ\2023\ИПНи СН\200 по клиентам за 2023
     return fr'\\fserver\ДБУИО_Новая\ДБУИО_Общая папка\ДБУ_Информация УНУ\{year}\ИПНи СН\200 по клиентам за {year}'
     # return r'C:\Users\robot.ad\Desktop\tax-registry-otbasy\finished'
 
